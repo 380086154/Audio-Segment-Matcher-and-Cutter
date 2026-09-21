@@ -1,0 +1,42 @@
+## Build
+[Dd]ebug/
+[Rr]elease/
+[Bb]in/
+[Oo]bj/
+artifacts/
+publish/
+[Tt]est[Rr]esult*/
+[Cc]overage*/
+*.binlog
+
+## Visual Studio / Rider / VS Code / Cursor
+.vs/
+.idea/
+.vscode/
+.cursor/
+*.user
+*.userosscache
+*.suo
+*.sln.docstates
+*.DotSettings.user
+*.rsuser
+
+## NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+project.lock.json
+project.fragment.lock.json
+
+## Logs and local FFmpeg
+logs/
+*.log
+tools/ffmpeg/
+ffmpeg.path
+
+## OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+$RECYCLE.BIN/

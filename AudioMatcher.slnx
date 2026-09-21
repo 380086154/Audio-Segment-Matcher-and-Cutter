@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="AudioMatcher.App/AudioMatcher.App.csproj" />
+  <Project Path="AudioMatcher.Core/AudioMatcher.Core.csproj" />
+  <Project Path="AudioMatcher.Infrastructure/AudioMatcher.Infrastructure.csproj" />
+  <Project Path="AudioMatcher.Tests/AudioMatcher.Tests.csproj" />
+</Solution>
