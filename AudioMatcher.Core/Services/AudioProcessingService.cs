@@ -5,6 +5,8 @@ namespace AudioMatcher.Core.Services;
 
 public sealed class AudioProcessingService : IAudioProcessingService
 {
+    public const int DefaultParallelism = 10;
+
     private readonly IAudioProcessor _processor;
     private readonly IProcessingLogger _logger;
 
@@ -20,38 +22,48 @@ public sealed class AudioProcessingService : IAudioProcessingService
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(requests);
-        var results = new List<ProcessingFileResult>(requests.Count);
-        for (var i = 0; i < requests.Count; i++)
+        if (requests.Count == 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            ProcessingFileResult result;
-            try
-            {
-                result = await _processor.ProcessAsync(requests[i], cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                result = new ProcessingFileResult
-                {
-                    SourceFilePath = requests[i].SourceFilePath,
-                    Status = ProcessingFileStatus.Cancelled,
-                    Action = requests[i].Action,
-                    Message = "Cancelled before the output file was written."
-                };
-                results.Add(result);
-                _logger.Log(result);
-                throw;
-            }
-            catch (Exception ex)
-            {
-                result = ProcessingFileResult.Fail(requests[i].SourceFilePath, ex.Message);
-            }
-
-            results.Add(result);
-            _logger.Log(result);
-            progress?.Report(new ProcessingProgress(i + 1, requests.Count, result));
+            return new ProcessingBatchResult { Files = [] };
         }
 
-        return new ProcessingBatchResult { Files = results };
+        var results = new ProcessingFileResult?[requests.Count];
+        var completed = 0;
+        var parallelOptions = new ParallelOptions
+        {
+            CancellationToken = cancellationToken,
+            MaxDegreeOfParallelism = DefaultParallelism
+        };
+
+        try
+        {
+            await Parallel.ForEachAsync(Enumerable.Range(0, requests.Count), parallelOptions, async (index, token) =>
+            {
+                ProcessingFileResult result;
+                try
+                {
+                    result = await _processor.ProcessAsync(requests[index], token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    result = ProcessingFileResult.Fail(requests[index].SourceFilePath, ex.Message);
+                }
+
+                results[index] = result;
+                _logger.Log(result);
+                var current = Interlocked.Increment(ref completed);
+                progress?.Report(new ProcessingProgress(current, requests.Count, result));
+            }).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Keep files that already finished. Incomplete FFmpeg output is discarded by the processor.
+        }
+
+        return new ProcessingBatchResult { Files = results.OfType<ProcessingFileResult>().ToArray() };
     }
 }

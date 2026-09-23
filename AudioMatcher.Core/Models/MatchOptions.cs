@@ -19,7 +19,7 @@ public sealed record MatchOptions
 
     public int MaxDegreeOfParallelism { get; init; } = DefaultParallelism;
 
-    public static int DefaultParallelism => Math.Clamp(Environment.ProcessorCount / 2, 1, 4);
+    public const int DefaultParallelism = 10;
 
     public static MatchOptions Normal { get; } = new()
     {
