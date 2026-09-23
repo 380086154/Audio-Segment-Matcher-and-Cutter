@@ -25,6 +25,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _processCts;
     private bool _outputFollowsSearchFolder = true;
     private bool _updatingSampleText;
+    private static readonly TimeSpan MinSampleLength = TimeSpan.FromMilliseconds(20);
 
     public MainViewModel(
         IAudioDecoder decoder,
@@ -467,6 +468,61 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         RefreshPosition();
     }
 
+    [RelayCommand]
+    private void NudgeSampleStart(double seconds)
+    {
+        if (SampleEnd <= SampleStart)
+        {
+            SeekBy(seconds);
+            return;
+        }
+
+        var start = SampleStart + TimeSpan.FromSeconds(seconds);
+        if (start < TimeSpan.Zero)
+        {
+            start = TimeSpan.Zero;
+        }
+
+        var maxStart = SampleEnd - MinSampleLength;
+        if (start > maxStart)
+        {
+            start = maxStart > TimeSpan.Zero ? maxStart : TimeSpan.Zero;
+        }
+
+        SampleStart = start;
+        SeekTo(start);
+    }
+
+    [RelayCommand]
+    private void NudgeSampleEnd(double seconds)
+    {
+        if (SampleEnd <= SampleStart)
+        {
+            SeekBy(seconds);
+            return;
+        }
+
+        var end = SampleEnd + TimeSpan.FromSeconds(seconds);
+        var minEnd = SampleStart + MinSampleLength;
+        if (end < minEnd)
+        {
+            end = minEnd;
+        }
+
+        if (Duration > TimeSpan.Zero && end > Duration)
+        {
+            end = Duration;
+        }
+
+        if (end <= SampleStart)
+        {
+            return;
+        }
+
+        SampleEnd = end;
+        SeekTo(end);
+    }
+
     public void SeekTo(TimeSpan time)
     {
         if (!_playback.HasAudio)
@@ -667,7 +723,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             var batch = await _processingService.ProcessAsync(requests, progress, _processCts.Token);
             LastFailedCount = batch.FailedCount;
-            StatusMessage = $"Completed    Success: {batch.SuccessCount}    Skipped: {batch.SkippedCount}";
+            StatusMessage = _processCts.IsCancellationRequested
+                ? $"Processing cancelled. Success: {batch.SuccessCount}    Skipped: {batch.SkippedCount}    Failed: {batch.FailedCount}"
+                : $"Completed    Success: {batch.SuccessCount}    Skipped: {batch.SkippedCount}";
             ProgressValue = 1;
         }
         catch (OperationCanceledException)

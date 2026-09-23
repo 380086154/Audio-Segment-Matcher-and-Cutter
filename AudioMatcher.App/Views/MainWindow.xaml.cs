@@ -82,9 +82,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var step = Keyboard.Modifiers.HasFlag(ModifierKeys.Control)
-            ? 0.05
-            : Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 5 : 0.5;
+        var step = Keyboard.Modifiers.HasFlag(ModifierKeys.Control) ? 0.01 : 0.05;
+        var nudgeStart = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
 
         switch (e.Key)
         {
@@ -101,11 +100,27 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
             case Key.Left:
-                vm.SeekByCommand.Execute(-step);
+                if (nudgeStart)
+                {
+                    vm.NudgeSampleStartCommand.Execute(-step);
+                }
+                else
+                {
+                    vm.NudgeSampleEndCommand.Execute(-step);
+                }
+
                 e.Handled = true;
                 break;
             case Key.Right:
-                vm.SeekByCommand.Execute(step);
+                if (nudgeStart)
+                {
+                    vm.NudgeSampleStartCommand.Execute(step);
+                }
+                else
+                {
+                    vm.NudgeSampleEndCommand.Execute(step);
+                }
+
                 e.Handled = true;
                 break;
         }

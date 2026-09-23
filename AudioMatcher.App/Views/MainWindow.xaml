@@ -122,9 +122,9 @@
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="120"/>
                                     <ColumnDefinition Width="Auto"/>
-                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="120"/>
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
@@ -202,8 +202,10 @@
 
                             <TextBlock Text="Action" Style="{StaticResource SectionTitle}"/>
                             <RadioButton Content="Remove All Matches" IsChecked="{Binding IsRemoveAll}" GroupName="Action"/>
-                            <RadioButton Content="Cut Before First Match" IsChecked="{Binding IsCutBefore}" GroupName="Action" Margin="0,8,0,0"/>
-                            <RadioButton Content="Cut After First Match" IsChecked="{Binding IsCutAfter}" GroupName="Action" Margin="0,8,0,16"/>
+                            <RadioButton Content="Cut Before First Match" IsChecked="{Binding IsCutBefore}" GroupName="Action" Margin="0,8,0,0"
+                                         ToolTip="Cut away from the beginning through the first match End. Keep from End to the end of the file."/>
+                            <RadioButton Content="Cut After First Match" IsChecked="{Binding IsCutAfter}" GroupName="Action" Margin="0,8,0,16"
+                                         ToolTip="Cut away from the first match Start through the end of the file. Keep from the beginning to Start."/>
 
                             <TextBlock Text="Output Folder" Style="{StaticResource SectionTitle}"/>
                             <Grid Margin="0,0,0,12">
