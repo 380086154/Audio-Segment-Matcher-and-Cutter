@@ -57,6 +57,18 @@ public sealed class AudioProcessingServiceTests
         Directory.Delete(folder, true);
     }
 
+    [Fact]
+    public async Task ProcessesFilesInParallel()
+    {
+        var service = new AudioProcessingService(new BarrierProcessor(), new RecordingLogger());
+        var requests = Enumerable.Range(0, 8).Select(i => Request($"f{i}.mp3")).ToArray();
+
+        var result = await service.ProcessAsync(requests);
+
+        Assert.Equal(8, result.SuccessCount);
+        Assert.Equal(0, result.FailedCount);
+    }
+
     private static ProcessingRequest Request(string name) => new()
     {
         SourceFilePath = name,
@@ -97,6 +109,29 @@ public sealed class AudioProcessingServiceTests
 
         public List<ProcessingFileResult> Results { get; } = [];
 
-        public void Log(ProcessingFileResult result) => Results.Add(result);
+        public void Log(ProcessingFileResult result)
+        {
+            lock (Results)
+            {
+                Results.Add(result);
+            }
+        }
+    }
+
+    private sealed class BarrierProcessor : IAudioProcessor
+    {
+        private readonly TaskCompletionSource _started = new();
+        private int _inFlight;
+
+        public async Task<ProcessingFileResult> ProcessAsync(ProcessingRequest request, CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _inFlight) == 8)
+            {
+                _started.TrySetResult();
+            }
+
+            await _started.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken);
+            return ProcessingFileResult.Success(request, "out\\" + request.SourceFilePath);
+        }
     }
 }

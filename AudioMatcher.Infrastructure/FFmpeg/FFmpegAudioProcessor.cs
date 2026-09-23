@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using AudioMatcher.Core.Interfaces;
 using AudioMatcher.Core.Models;
 using AudioMatcher.Core.Processing;
@@ -63,12 +64,23 @@ public sealed class FFmpegAudioProcessor : IAudioProcessor
         }
 
         var tempPath = CreateTempOutputPath(decision.OutputPath);
+        var extras = new List<string>();
         TryDelete(tempPath);
 
         try
         {
-            var arguments = BuildArguments(source, tempPath, segments);
-            await _runner.RunToFileAsync(_locator.RequireFfmpeg(), arguments, cancellationToken).ConfigureAwait(false);
+            var ffmpeg = _locator.RequireFfmpeg();
+            if (segments.Count == 1)
+            {
+                var arguments = BuildArguments(source, tempPath, segments[0]);
+                await _runner.RunToFileAsync(ffmpeg, arguments, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await ConcatCopyAsync(ffmpeg, source, tempPath, decision.OutputPath, segments, extras, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             cancellationToken.ThrowIfCancellationRequested();
 
             if (!File.Exists(tempPath) || new FileInfo(tempPath).Length == 0)
@@ -94,6 +106,13 @@ public sealed class FFmpegAudioProcessor : IAudioProcessor
             TryDelete(tempPath);
             return ProcessingFileResult.Fail(source, ex.Message);
         }
+        finally
+        {
+            foreach (var extra in extras)
+            {
+                TryDelete(extra);
+            }
+        }
 
         var after = new FileInfo(source);
         if (after.Length != originalLength || after.LastWriteTimeUtc != originalWriteTime)
@@ -104,36 +123,54 @@ public sealed class FFmpegAudioProcessor : IAudioProcessor
         return ProcessingFileResult.Success(request, decision.OutputPath);
     }
 
-    internal static List<string> BuildArguments(string source, string output, IReadOnlyList<KeepSegment> segments)
+    internal static List<string> BuildArguments(string source, string output, KeepSegment segment)
     {
         var arguments = new List<string>
         {
             "-hide_banner", "-nostdin", "-y", "-v", "error",
             "-i", source,
-            "-vn"
+            "-vn",
+            "-map", "0:a:0",
+            "-ss", ToSeconds(segment.Start),
+            "-t", ToSeconds(segment.End - segment.Start),
+            "-c", "copy",
+            "-avoid_negative_ts", "make_zero"
         };
 
-        if (segments.Count == 1)
-        {
-            arguments.Add("-map");
-            arguments.Add("0:a:0");
-            arguments.Add("-ss");
-            arguments.Add(ToSeconds(segments[0].Start));
-            arguments.Add("-to");
-            arguments.Add(ToSeconds(segments[0].End));
-        }
-        else
-        {
-            arguments.Add("-filter_complex");
-            arguments.Add(BuildFilter(segments));
-            arguments.Add("-map");
-            arguments.Add("[out]");
-        }
-
-        arguments.AddRange(CodecArguments(output));
         arguments.AddRange(ContainerArguments(output));
         arguments.Add(output);
         return arguments;
+    }
+
+    internal static List<string> BuildConcatArguments(string listPath, string output)
+    {
+        var arguments = new List<string>
+        {
+            "-hide_banner", "-nostdin", "-y", "-v", "error",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", listPath,
+            "-c", "copy",
+            "-avoid_negative_ts", "make_zero"
+        };
+
+        arguments.AddRange(ContainerArguments(output));
+        arguments.Add(output);
+        return arguments;
+    }
+
+    internal static string BuildConcatList(IReadOnlyList<string> files)
+    {
+        var builder = new StringBuilder();
+        foreach (var file in files)
+        {
+            var path = Path.GetFullPath(file).Replace('\\', '/').Replace("'", @"'\''");
+            builder.Append("file '");
+            builder.Append(path);
+            builder.AppendLine("'");
+        }
+
+        return builder.ToString();
     }
 
     internal static string CreateTempOutputPath(string outputPath)
@@ -145,21 +182,39 @@ public sealed class FFmpegAudioProcessor : IAudioProcessor
         return string.IsNullOrWhiteSpace(directory) ? fileName : Path.Combine(directory, fileName);
     }
 
-    internal static string BuildFilter(IReadOnlyList<KeepSegment> segments)
+    internal static string CreateSidecarPath(string outputPath, string suffix)
     {
-        var labels = new List<string>(segments.Count);
-        var builder = new System.Text.StringBuilder();
+        var directory = Path.GetDirectoryName(outputPath);
+        var name = Path.GetFileNameWithoutExtension(outputPath);
+        var fileName = name + suffix;
+        return string.IsNullOrWhiteSpace(directory) ? fileName : Path.Combine(directory, fileName);
+    }
+
+    private async Task ConcatCopyAsync(
+        string ffmpeg,
+        string source,
+        string output,
+        string finalOutputPath,
+        IReadOnlyList<KeepSegment> segments,
+        List<string> extras,
+        CancellationToken cancellationToken)
+    {
+        var extension = Path.GetExtension(finalOutputPath);
+        var partPaths = new List<string>(segments.Count);
         for (var i = 0; i < segments.Count; i++)
         {
-            var label = $"a{i}";
-            labels.Add($"[{label}]");
-            builder.Append(CultureInfo.InvariantCulture,
-                $"[0:a]atrim=start={ToSeconds(segments[i].Start)}:end={ToSeconds(segments[i].End)},asetpts=PTS-STARTPTS[{label}];");
+            var partPath = CreateSidecarPath(finalOutputPath, $".seg{i}.partial{extension}");
+            extras.Add(partPath);
+            partPaths.Add(partPath);
+            TryDelete(partPath);
+            var arguments = BuildArguments(source, partPath, segments[i]);
+            await _runner.RunToFileAsync(ffmpeg, arguments, cancellationToken).ConfigureAwait(false);
         }
 
-        builder.Append(string.Concat(labels));
-        builder.Append(CultureInfo.InvariantCulture, $"concat=n={segments.Count}:v=0:a=1[out]");
-        return builder.ToString();
+        var listPath = CreateSidecarPath(finalOutputPath, ".concat.txt");
+        extras.Add(listPath);
+        await File.WriteAllTextAsync(listPath, BuildConcatList(partPaths), cancellationToken).ConfigureAwait(false);
+        await _runner.RunToFileAsync(ffmpeg, BuildConcatArguments(listPath, output), cancellationToken).ConfigureAwait(false);
     }
 
     private static IEnumerable<string> ContainerArguments(string outputPath)
@@ -176,19 +231,6 @@ public sealed class FFmpegAudioProcessor : IAudioProcessor
         };
 
         return format is null ? [] : ["-f", format];
-    }
-
-    private static IEnumerable<string> CodecArguments(string outputPath)
-    {
-        var extension = Path.GetExtension(outputPath).ToLowerInvariant();
-        return extension switch
-        {
-            ".wav" => ["-c:a", "pcm_s16le"],
-            ".flac" => ["-c:a", "flac"],
-            ".m4a" or ".aac" => ["-c:a", "aac", "-b:a", "192k"],
-            ".ogg" => ["-c:a", "libvorbis", "-q:a", "5"],
-            _ => ["-c:a", "libmp3lame", "-q:a", "2"]
-        };
     }
 
     private static string ToSeconds(TimeSpan time)

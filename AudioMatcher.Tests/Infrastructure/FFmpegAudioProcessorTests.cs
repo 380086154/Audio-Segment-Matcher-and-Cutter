@@ -1,5 +1,4 @@
 using AudioMatcher.Core.Models;
-using AudioMatcher.Core.Processing;
 using AudioMatcher.Infrastructure.FFmpeg;
 
 namespace AudioMatcher.Tests.Infrastructure;
@@ -7,18 +6,24 @@ namespace AudioMatcher.Tests.Infrastructure;
 public sealed class FFmpegAudioProcessorTests
 {
     [Fact]
-    public void SingleSegment_UsesAccurateSeekWithoutFilterGraph()
+    public void SingleSegment_CopiesAudioStreamWithoutReencoding()
     {
         var args = FFmpegAudioProcessor.BuildArguments(
             @"D:\in\chapter.mp3",
             @"D:\out\chapter.mp3",
-            [new KeepSegment(TimeSpan.FromSeconds(12.5), TimeSpan.FromSeconds(90))]);
+            new KeepSegment(TimeSpan.FromSeconds(12.5), TimeSpan.FromSeconds(90)));
 
         Assert.Contains("-ss", args);
         Assert.Contains("12.5", args);
-        Assert.Contains("-to", args);
+        var tIndex = args.IndexOf("-t");
+        Assert.True(tIndex >= 0);
+        Assert.Equal("77.5", args[tIndex + 1]);
+        Assert.DoesNotContain("-to", args);
         Assert.DoesNotContain("-filter_complex", args);
-        Assert.Contains("libmp3lame", args);
+        var copyIndex = args.IndexOf("-c");
+        Assert.True(copyIndex >= 0);
+        Assert.Equal("copy", args[copyIndex + 1]);
+        Assert.DoesNotContain("libmp3lame", args);
         Assert.Contains("-f", args);
         Assert.Contains("mp3", args);
     }
@@ -32,16 +37,28 @@ public sealed class FFmpegAudioProcessorTests
     }
 
     [Fact]
-    public void MultipleSegments_UseConcatFilter()
+    public void ConcatList_WritesQuotedFileEntries()
     {
-        var filter = FFmpegAudioProcessor.BuildFilter(
+        var list = FFmpegAudioProcessor.BuildConcatList(
         [
-            new KeepSegment(TimeSpan.Zero, TimeSpan.FromSeconds(10)),
-            new KeepSegment(TimeSpan.FromSeconds(20), TimeSpan.FromSeconds(30))
+            @"D:\out\chapter.seg0.partial.mp3",
+            @"D:\out\chapter.seg1.partial.mp3"
         ]);
 
-        Assert.Contains("atrim=start=0:end=10", filter);
-        Assert.Contains("atrim=start=20:end=30", filter);
-        Assert.Contains("concat=n=2:v=0:a=1[out]", filter);
+        Assert.Contains("file '", list);
+        Assert.Contains("chapter.seg0.partial.mp3", list);
+        Assert.Contains("chapter.seg1.partial.mp3", list);
+    }
+
+    [Fact]
+    public void ConcatArguments_CopyStream()
+    {
+        var args = FFmpegAudioProcessor.BuildConcatArguments(@"D:\out\chapter.concat.txt", @"D:\out\chapter.mp3");
+        Assert.Contains("-f", args);
+        Assert.Contains("concat", args);
+        var copyIndex = args.IndexOf("-c");
+        Assert.True(copyIndex >= 0);
+        Assert.Equal("copy", args[copyIndex + 1]);
+        Assert.DoesNotContain("libmp3lame", args);
     }
 }

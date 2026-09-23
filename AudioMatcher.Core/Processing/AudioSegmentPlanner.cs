@@ -52,6 +52,7 @@ public sealed class AudioSegmentPlanner
         return keep;
     }
 
+    // Keep [MatchEnd, EOF]: drop from the start of the file through the first match.
     private static IReadOnlyList<KeepSegment> PlanCutBefore(TimeSpan duration, IReadOnlyList<AudioMatch> matches)
     {
         var first = FirstMatchSelector.Select(Valid(matches));
@@ -60,15 +61,16 @@ public sealed class AudioSegmentPlanner
             return [];
         }
 
-        var start = Clamp(first.Start, duration);
-        if (start >= duration)
+        var end = Clamp(first.End, duration);
+        if (end >= duration)
         {
             return [];
         }
 
-        return [new KeepSegment(start, duration)];
+        return [new KeepSegment(end, duration)];
     }
 
+    // Keep [0, MatchStart]: drop from the first match through EOF (the match is cut away).
     private static IReadOnlyList<KeepSegment> PlanCutAfter(TimeSpan duration, IReadOnlyList<AudioMatch> matches)
     {
         var first = FirstMatchSelector.Select(Valid(matches));
@@ -77,13 +79,13 @@ public sealed class AudioSegmentPlanner
             return [];
         }
 
-        var end = Clamp(first.End, duration);
-        if (end <= TimeSpan.Zero)
+        var start = Clamp(first.Start, duration);
+        if (start <= TimeSpan.Zero)
         {
             return [];
         }
 
-        return [new KeepSegment(TimeSpan.Zero, end)];
+        return [new KeepSegment(TimeSpan.Zero, start)];
     }
 
     private static IEnumerable<AudioMatch> Valid(IEnumerable<AudioMatch> matches)

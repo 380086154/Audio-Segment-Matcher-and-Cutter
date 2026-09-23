@@ -58,38 +58,93 @@ public sealed class AudioSegmentPlannerTests
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(4)]
-    [InlineData(9.5)]
-    public void CutBefore_KeepsFromFirstMatchToEnd(double startMinutes)
+    [InlineData(0.2)]
+    [InlineData(4.2)]
+    [InlineData(9.2)]
+    public void CutBefore_KeepsFromFirstMatchEndToFileEnd(double endMinutes)
     {
-        var start = TimeSpan.FromMinutes(startMinutes);
         var keep = _planner.Plan(Duration,
         [
             TestAudio.Match(File, TimeSpan.FromMinutes(9.8), TimeSpan.FromMinutes(10)),
-            TestAudio.Match(File, start, start + TimeSpan.FromSeconds(12))
+            TestAudio.Match(File, TimeSpan.FromMinutes(endMinutes) - TimeSpan.FromSeconds(12), TimeSpan.FromMinutes(endMinutes))
         ], ProcessingAction.CutBeforeFirstMatch);
 
         var segment = Assert.Single(keep);
-        Assert.Equal(start, segment.Start);
+        Assert.Equal(TimeSpan.FromMinutes(endMinutes), segment.Start);
         Assert.Equal(Duration, segment.End);
     }
 
     [Theory]
-    [InlineData(0, 0.2)]
-    [InlineData(4, 4.2)]
-    [InlineData(9, 9.2)]
-    public void CutAfter_KeepsFromStartToFirstMatchEnd(double startMinutes, double endMinutes)
+    [InlineData(0.2)]
+    [InlineData(4)]
+    [InlineData(9)]
+    public void CutAfter_KeepsFromBeginningToFirstMatchStart(double startMinutes)
     {
+        var start = TimeSpan.FromMinutes(startMinutes);
         var keep = _planner.Plan(Duration,
         [
             TestAudio.Match(File, TimeSpan.FromMinutes(9.8), TimeSpan.FromMinutes(9.95)),
-            TestAudio.Match(File, TimeSpan.FromMinutes(startMinutes), TimeSpan.FromMinutes(endMinutes))
+            TestAudio.Match(File, start, start + TimeSpan.FromSeconds(12))
         ], ProcessingAction.CutAfterFirstMatch);
 
         var segment = Assert.Single(keep);
         Assert.Equal(TimeSpan.Zero, segment.Start);
-        Assert.Equal(TimeSpan.FromMinutes(endMinutes), segment.End);
+        Assert.Equal(start, segment.End);
+    }
+
+    [Fact]
+    public void CutBefore_StartsAtMatchEnd()
+    {
+        var matchStart = TimeSpan.FromSeconds(90);
+        var matchEnd = TimeSpan.FromSeconds(100);
+        var keep = _planner.Plan(Duration, [TestAudio.Match(File, matchStart, matchEnd)], ProcessingAction.CutBeforeFirstMatch);
+        var segment = Assert.Single(keep);
+        Assert.Equal(matchEnd, segment.Start);
+        Assert.Equal(Duration, segment.End);
+        Assert.NotEqual(matchStart, segment.Start);
+    }
+
+    [Fact]
+    public void CutBefore_MatchAtEnd_ProducesNoOutput()
+    {
+        var keep = _planner.Plan(Duration, [TestAudio.Match(File, TimeSpan.FromMinutes(9), Duration)], ProcessingAction.CutBeforeFirstMatch);
+        Assert.Empty(keep);
+    }
+
+    [Fact]
+    public void CutAfter_MatchAtBeginning_ProducesNoOutput()
+    {
+        var keep = _planner.Plan(Duration, [TestAudio.Match(File, TimeSpan.Zero, TimeSpan.FromSeconds(12))], ProcessingAction.CutAfterFirstMatch);
+        Assert.Empty(keep);
+    }
+
+    [Fact]
+    public void CutAfter_StopsAtMatchStart()
+    {
+        var matchStart = TimeSpan.FromSeconds(90);
+        var matchEnd = TimeSpan.FromSeconds(100);
+        var keep = _planner.Plan(Duration, [TestAudio.Match(File, matchStart, matchEnd)], ProcessingAction.CutAfterFirstMatch);
+        var segment = Assert.Single(keep);
+        Assert.Equal(TimeSpan.Zero, segment.Start);
+        Assert.Equal(matchStart, segment.End);
+        Assert.NotEqual(matchEnd, segment.End);
+    }
+
+    [Fact]
+    public void CutActions_UseFirstMatchInclusiveRange()
+    {
+        var matchStart = TimeSpan.Parse("00:19:54.077");
+        var matchEnd = TimeSpan.Parse("00:20:00.183");
+        var duration = TimeSpan.FromMinutes(30);
+        var matches = new[] { TestAudio.Match(File, matchStart, matchEnd) };
+
+        var before = Assert.Single(_planner.Plan(duration, matches, ProcessingAction.CutBeforeFirstMatch));
+        Assert.Equal(matchEnd, before.Start);
+        Assert.Equal(duration, before.End);
+
+        var after = Assert.Single(_planner.Plan(duration, matches, ProcessingAction.CutAfterFirstMatch));
+        Assert.Equal(TimeSpan.Zero, after.Start);
+        Assert.Equal(matchStart, after.End);
     }
 
     [Fact]
@@ -102,9 +157,10 @@ public sealed class AudioSegmentPlannerTests
         };
 
         var before = Assert.Single(_planner.Plan(Duration, matches, ProcessingAction.CutBeforeFirstMatch));
-        Assert.Equal(TimeSpan.FromMinutes(2), before.Start);
+        Assert.Equal(TimeSpan.FromMinutes(2.2), before.Start);
+        Assert.Equal(Duration, before.End);
 
         var after = Assert.Single(_planner.Plan(Duration, matches, ProcessingAction.CutAfterFirstMatch));
-        Assert.Equal(TimeSpan.FromMinutes(2.2), after.End);
+        Assert.Equal(TimeSpan.FromMinutes(2), after.End);
     }
 }
