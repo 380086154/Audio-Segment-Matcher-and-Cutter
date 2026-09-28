@@ -1,4 +1,5 @@
 ﻿using System.Windows;
+using AudioMatcher.App.Localization;
 using AudioMatcher.App.Services;
 using AudioMatcher.App.ViewModels;
 using AudioMatcher.App.Views;
@@ -32,6 +33,7 @@ public partial class App : Application
         var processing = new AudioProcessingService(processor, logger);
         var waveform = new StreamingWaveformGenerator(decoder, locator, runner);
         var player = new NAudioPlaybackService();
+        var localization = new LocalizationService();
 
         _viewModel = new MainViewModel(
             decoder,
@@ -40,7 +42,8 @@ public partial class App : Application
             processing,
             player,
             locator,
-            logger);
+            logger,
+            localization);
 
         var window = new MainWindow
         {

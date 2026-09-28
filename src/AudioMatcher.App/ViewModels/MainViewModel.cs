@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.IO;
 using AudioMatcher.Core.Interfaces;
 using AudioMatcher.Core.Models;
+using AudioMatcher.App.Localization;
 using AudioMatcher.App.Services;
 using AudioMatcher.Infrastructure.FFmpeg;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -19,12 +20,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly IAudioPlaybackService _playback;
     private readonly FFmpegLocator _ffmpegLocator;
     private readonly IProcessingLogger _logger;
+    private readonly ILocalizationService _localization;
     private readonly SynchronizationContext _ui;
     private readonly System.Timers.Timer _positionTimer;
     private CancellationTokenSource? _searchCts;
     private CancellationTokenSource? _processCts;
     private bool _outputFollowsSearchFolder = true;
     private bool _updatingSampleText;
+    private string? _statusKey;
+    private object[] _statusArgs = [];
+    private string? _progressKey;
+    private object[] _progressArgs = [];
+    private int _summaryMatched;
+    private int _summaryTotal;
+    private ProgressDisplay _progressDisplay = ProgressDisplay.None;
+    private int _searchProcessed;
+    private int _searchTotal;
+    private int _searchMatched;
+    private string? _processFileName;
+    private ProcessingFileStatus _processFileStatus;
+    private int _processCompleted;
+    private int _processTotal;
     private static readonly TimeSpan MinSampleLength = TimeSpan.FromMilliseconds(20);
 
     public MainViewModel(
@@ -34,7 +50,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IAudioProcessingService processingService,
         IAudioPlaybackService playback,
         FFmpegLocator ffmpegLocator,
-        IProcessingLogger logger)
+        IProcessingLogger logger,
+        ILocalizationService localization)
     {
         _decoder = decoder;
         _waveformGenerator = waveformGenerator;
@@ -43,14 +60,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         _playback = playback;
         _ffmpegLocator = ffmpegLocator;
         _logger = logger;
+        _localization = localization;
         _ui = SynchronizationContext.Current ?? new SynchronizationContext();
         HasFfmpeg = ffmpegLocator.IsAvailable;
-        FfmpegStatus = ffmpegLocator.IsAvailable
-            ? $"FFmpeg: {ffmpegLocator.FfmpegPath}"
-            : FFmpegLocator.MissingMessage;
-        StatusMessage = ffmpegLocator.IsAvailable
-            ? "Select a source audio file, mark a sample, then search a folder."
-            : FFmpegLocator.MissingMessage;
+        ApplyFfmpegStatus();
+        SetStatus(ffmpegLocator.IsAvailable ? LocalizationKeys.StatusReadyHint : LocalizationKeys.FfmpegMissing);
+        UpdateResultSummary();
+        _localization.LanguageChanged += OnLanguageChanged;
 
         _playback.PlaybackStopped += (_, _) => _ui.Post(_ =>
         {
@@ -175,27 +191,27 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             if (!HasFfmpeg)
             {
-                return "Search 需要 FFmpeg。请点击 Locate FFmpeg，选择完整的 ffmpeg.exe。";
+                return _localization.GetString(LocalizationKeys.SearchNeedsFfmpeg);
             }
 
             if (string.IsNullOrWhiteSpace(SourceFilePath))
             {
-                return "请先选择源音频文件。";
+                return _localization.GetString(LocalizationKeys.SelectSourceFirst);
             }
 
             if (SampleEnd <= SampleStart)
             {
-                return "请设置 Sample 结束时间，且必须晚于开始时间。";
+                return _localization.GetString(LocalizationKeys.SampleEndAfterStart);
             }
 
             if (string.IsNullOrWhiteSpace(SearchFolder))
             {
-                return "请选择 Search Folder。";
+                return _localization.GetString(LocalizationKeys.SelectSearchFolder);
             }
 
             if (IsProcessing)
             {
-                return "请等待当前处理完成。";
+                return _localization.GetString(LocalizationKeys.WaitForProcessing);
             }
 
             return null;
@@ -205,7 +221,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public bool HasSearchDisabledReason => !string.IsNullOrWhiteSpace(SearchDisabledReason);
 
     [ObservableProperty]
-    private string resultSummary = "Results: 0 / 0 matched";
+    private string resultSummary = "";
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasFailedResults))]
@@ -215,7 +231,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public bool HasFailedResults => LastFailedCount > 0;
 
-    public string FailedCountText => $"Failed: {LastFailedCount}";
+    public bool IsChinese => _localization.CurrentLanguage == AppLanguage.Chinese;
+
+    public string FailedCountText => _localization.Format(LocalizationKeys.FailedCount, LastFailedCount);
 
     public string PositionText => $"{TimeText.Format(Position)} / {TimeText.Format(Duration)}";
 
@@ -316,8 +334,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var dialog = new OpenFileDialog
         {
-            Title = "Select source audio",
-            Filter = "Audio files|*.mp3;*.wav;*.flac;*.m4a;*.aac;*.ogg;*.wma|All files|*.*"
+            Title = _localization.GetString(LocalizationKeys.DialogSelectSource),
+            Filter = $"{_localization.GetString(LocalizationKeys.AudioFilesFilter)}|*.mp3;*.wav;*.flac;*.m4a;*.aac;*.ogg;*.wma|{_localization.GetString(LocalizationKeys.AllFilesFilter)}|*.*"
         };
 
         if (dialog.ShowDialog() == true)
@@ -330,7 +348,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         if (!File.Exists(filePath))
         {
-            StatusMessage = "Source audio file was not found.";
+            SetStatus(LocalizationKeys.SourceNotFound);
             return;
         }
 
@@ -348,7 +366,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             if (HasFfmpeg)
             {
-                StatusMessage = "Loading waveform...";
+                SetStatus(LocalizationKeys.LoadingWaveform);
                 Waveform = await _waveformGenerator.GenerateAsync(filePath, 2400);
                 if (Duration <= TimeSpan.Zero)
                 {
@@ -361,13 +379,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 SearchFolder = Path.GetDirectoryName(filePath);
             }
 
-            StatusMessage = HasFfmpeg
-                ? "Source loaded. Drag on the waveform or use Set Start / Set End."
-                : "Source loaded for playback. Install FFmpeg to search and process files.";
+            SetStatus(HasFfmpeg ? LocalizationKeys.SourceLoaded : LocalizationKeys.SourceLoadedNoFfmpeg);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Failed to open source audio: {ex.Message}";
+            SetStatus(LocalizationKeys.OpenSourceFailed, ex.Message);
         }
         finally
         {
@@ -378,7 +394,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void BrowseSearchFolder()
     {
-        var dialog = new OpenFolderDialog { Title = "Select search folder" };
+        var dialog = new OpenFolderDialog { Title = _localization.GetString(LocalizationKeys.DialogSelectSearchFolder) };
         if (dialog.ShowDialog() == true)
         {
             SearchFolder = dialog.FolderName;
@@ -388,7 +404,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand]
     private void BrowseOutputFolder()
     {
-        var dialog = new OpenFolderDialog { Title = "Select output folder" };
+        var dialog = new OpenFolderDialog { Title = _localization.GetString(LocalizationKeys.DialogSelectOutputFolder) };
         if (dialog.ShowDialog() == true)
         {
             OutputFolder = dialog.FolderName;
@@ -544,9 +560,9 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanSearch))]
     private async Task SearchAsync()
     {
-        if (!TryCreateSample(out var sample, out var error))
+        if (!TryCreateSample(out var sample, out var errorKey))
         {
-            StatusMessage = error;
+            SetStatus(errorKey);
             return;
         }
 
@@ -557,15 +573,15 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IsSearching = true;
         Results.Clear();
         ProgressValue = 0;
-        ProgressText = "Starting search...";
-        StatusMessage = "Searching...";
+        SetProgress(LocalizationKeys.SearchStarting);
+        SetStatus(LocalizationKeys.Searching);
 
         try
         {
             var progress = new Progress<SearchProgress>(report =>
             {
                 ProgressValue = report.Fraction;
-                ProgressText = $"Processed: {report.Processed} / {report.Total}    Matched: {report.Matched}";
+                ShowSearchProgress(report.Processed, report.Total, report.Matched);
             });
 
             var results = await _searchService.SearchAsync(
@@ -581,23 +597,31 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
             foreach (var result in results)
             {
-                Results.Add(new SearchResultItemViewModel(result, result.HasMatch));
+                Results.Add(new SearchResultItemViewModel(result, result.HasMatch, _localization));
             }
 
             var matched = Results.Count(item => item.Result.HasMatch);
-            ResultSummary = $"Results: {matched} / {Results.Count} matched";
-            StatusMessage = _searchCts.IsCancellationRequested
-                ? $"Search cancelled. Kept {Results.Count} completed files."
-                : $"Search completed. Matched {matched} of {Results.Count} files.";
+            _summaryMatched = matched;
+            _summaryTotal = Results.Count;
+            UpdateResultSummary();
+            if (_searchCts.IsCancellationRequested)
+            {
+                SetStatus(LocalizationKeys.SearchCancelledKept, Results.Count);
+            }
+            else
+            {
+                SetStatus(LocalizationKeys.SearchCompleted, matched, Results.Count);
+            }
+
             ProgressValue = 1;
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Search cancelled.";
+            SetStatus(LocalizationKeys.SearchCancelled);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Search failed: {ex.Message}";
+            SetStatus(LocalizationKeys.SearchFailed, ex.Message);
         }
         finally
         {
@@ -621,8 +645,8 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     {
         var dialog = new OpenFileDialog
         {
-            Title = "Locate ffmpeg.exe",
-            Filter = "ffmpeg.exe|ffmpeg.exe|Executable|*.exe|All files|*.*",
+            Title = _localization.GetString(LocalizationKeys.DialogLocateFfmpeg),
+            Filter = $"ffmpeg.exe|ffmpeg.exe|{_localization.GetString(LocalizationKeys.ExecutableFilter)}|*.exe|{_localization.GetString(LocalizationKeys.AllFilesFilter)}|*.*",
             FileName = "ffmpeg.exe"
         };
 
@@ -633,18 +657,21 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         if (!_ffmpegLocator.TryUse(dialog.FileName))
         {
-            StatusMessage = "The selected file is not a valid ffmpeg.exe.";
+            SetStatus(LocalizationKeys.InvalidFfmpeg);
             return;
         }
 
         HasFfmpeg = true;
-        FfmpegStatus = $"FFmpeg: {_ffmpegLocator.FfmpegPath}";
-        StatusMessage = "FFmpeg located. You can search now.";
+        ApplyFfmpegStatus();
+        SetStatus(LocalizationKeys.FfmpegLocated);
         SearchCommand.NotifyCanExecuteChanged();
         ProcessSelectedCommand.NotifyCanExecuteChanged();
         OnPropertyChanged(nameof(SearchDisabledReason));
         OnPropertyChanged(nameof(HasSearchDisabledReason));
     }
+
+    [RelayCommand]
+    private void ToggleLanguage() => _localization.ToggleLanguage();
 
     [RelayCommand]
     private void CancelSearch() => _searchCts?.Cancel();
@@ -682,13 +709,13 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         var selected = Results.Where(item => item.IsSelected && item.Result.HasMatch).ToList();
         if (selected.Count == 0)
         {
-            StatusMessage = "Select at least one matched file.";
+            SetStatus(LocalizationKeys.SelectMatchedFile);
             return;
         }
 
         if (string.IsNullOrWhiteSpace(OutputFolder))
         {
-            StatusMessage = "Choose an output folder first.";
+            SetStatus(LocalizationKeys.ChooseOutputFolder);
             return;
         }
 
@@ -699,7 +726,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         IsProcessing = true;
         LastFailedCount = 0;
         ProgressValue = 0;
-        StatusMessage = "Processing...";
+        SetStatus(LocalizationKeys.Processing);
 
         var requests = selected.Select(item => new ProcessingRequest
         {
@@ -718,23 +745,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             {
                 ProgressValue = report.Total == 0 ? 0 : report.Completed / (double)report.Total;
                 var name = Path.GetFileName(report.LastResult.SourceFilePath);
-                ProgressText = $"{name}    {report.LastResult.Status}    {report.Completed} / {report.Total}";
+                ShowProcessProgress(name, report.LastResult.Status, report.Completed, report.Total);
             });
 
             var batch = await _processingService.ProcessAsync(requests, progress, _processCts.Token);
             LastFailedCount = batch.FailedCount;
-            StatusMessage = _processCts.IsCancellationRequested
-                ? $"Processing cancelled. Success: {batch.SuccessCount}    Skipped: {batch.SkippedCount}    Failed: {batch.FailedCount}"
-                : $"Completed    Success: {batch.SuccessCount}    Skipped: {batch.SkippedCount}";
+            if (_processCts.IsCancellationRequested)
+            {
+                SetStatus(LocalizationKeys.ProcessingCancelledSummary, batch.SuccessCount, batch.SkippedCount, batch.FailedCount);
+            }
+            else
+            {
+                SetStatus(LocalizationKeys.ProcessingCompleted, batch.SuccessCount, batch.SkippedCount);
+            }
+
             ProgressValue = 1;
         }
         catch (OperationCanceledException)
         {
-            StatusMessage = "Processing cancelled. Completed files were kept. Incomplete output was discarded.";
+            SetStatus(LocalizationKeys.ProcessingCancelled);
         }
         catch (Exception ex)
         {
-            StatusMessage = $"Processing failed: {ex.Message}";
+            SetStatus(LocalizationKeys.ProcessingFailed, ex.Message);
         }
         finally
         {
@@ -764,10 +797,122 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
     public void Dispose()
     {
+        _localization.LanguageChanged -= OnLanguageChanged;
         _positionTimer.Dispose();
         _searchCts?.Dispose();
         _processCts?.Dispose();
         _playback.Dispose();
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e) => RefreshLocalizedText();
+
+    private void SetStatus(string key, params object[] args)
+    {
+        _statusKey = key;
+        _statusArgs = args;
+        StatusMessage = _localization.Format(key, args);
+    }
+
+    private void SetProgress(string key, params object[] args)
+    {
+        _progressDisplay = ProgressDisplay.Text;
+        _progressKey = key;
+        _progressArgs = args;
+        ProgressText = _localization.Format(key, args);
+    }
+
+    private void ShowSearchProgress(int processed, int total, int matched)
+    {
+        _progressDisplay = ProgressDisplay.Search;
+        _searchProcessed = processed;
+        _searchTotal = total;
+        _searchMatched = matched;
+        ProgressText = _localization.Format(LocalizationKeys.SearchProgress, processed, total, matched);
+    }
+
+    private void ShowProcessProgress(string fileName, ProcessingFileStatus status, int completed, int total)
+    {
+        _progressDisplay = ProgressDisplay.Process;
+        _processFileName = fileName;
+        _processFileStatus = status;
+        _processCompleted = completed;
+        _processTotal = total;
+        ProgressText = _localization.Format(
+            LocalizationKeys.ProcessFileProgress,
+            fileName,
+            LocalizeFileStatus(status),
+            completed,
+            total);
+    }
+
+    private void ApplyFfmpegStatus()
+    {
+        FfmpegStatus = HasFfmpeg
+            ? _localization.Format(LocalizationKeys.FfmpegReady, _ffmpegLocator.FfmpegPath ?? "")
+            : _localization.GetString(LocalizationKeys.FfmpegMissing);
+    }
+
+    private void UpdateResultSummary()
+        => ResultSummary = _localization.Format(LocalizationKeys.ResultSummary, _summaryMatched, _summaryTotal);
+
+    private string LocalizeFileStatus(ProcessingFileStatus status) => status switch
+    {
+        ProcessingFileStatus.Success => _localization.GetString(LocalizationKeys.FileStatusSuccess),
+        ProcessingFileStatus.Failed => _localization.GetString(LocalizationKeys.FileStatusFailed),
+        ProcessingFileStatus.Skipped => _localization.GetString(LocalizationKeys.FileStatusSkipped),
+        ProcessingFileStatus.Cancelled => _localization.GetString(LocalizationKeys.FileStatusCancelled),
+        _ => status.ToString()
+    };
+
+    private void RefreshLocalizedText()
+    {
+        OnPropertyChanged(nameof(IsChinese));
+        OnPropertyChanged(nameof(SearchDisabledReason));
+        OnPropertyChanged(nameof(HasSearchDisabledReason));
+        OnPropertyChanged(nameof(FailedCountText));
+        ApplyFfmpegStatus();
+        UpdateResultSummary();
+        UpdateSampleWarning();
+
+        if (_statusKey is not null)
+        {
+            StatusMessage = _localization.Format(_statusKey, _statusArgs);
+        }
+
+        switch (_progressDisplay)
+        {
+            case ProgressDisplay.Text when _progressKey is not null:
+                ProgressText = _localization.Format(_progressKey, _progressArgs);
+                break;
+            case ProgressDisplay.Search:
+                ProgressText = _localization.Format(
+                    LocalizationKeys.SearchProgress,
+                    _searchProcessed,
+                    _searchTotal,
+                    _searchMatched);
+                break;
+            case ProgressDisplay.Process when _processFileName is not null:
+                ProgressText = _localization.Format(
+                    LocalizationKeys.ProcessFileProgress,
+                    _processFileName,
+                    LocalizeFileStatus(_processFileStatus),
+                    _processCompleted,
+                    _processTotal);
+                break;
+        }
+
+        foreach (var item in Results)
+        {
+            item.RefreshLocalization();
+        }
+    }
+
+    private enum ProgressDisplay
+    {
+        None,
+        Text,
+        Search,
+        Process
     }
 
     private void RefreshPosition()
@@ -804,29 +949,29 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
 
         var duration = SampleEnd - SampleStart;
         SampleWarning = duration < TimeSpan.FromSeconds(3)
-            ? "Sample is very short and may cause false matches."
+            ? _localization.GetString(LocalizationKeys.SampleTooShort)
             : null;
     }
 
-    private bool TryCreateSample(out AudioSample sample, out string error)
+    private bool TryCreateSample(out AudioSample sample, out string errorKey)
     {
         sample = null!;
-        error = "";
+        errorKey = "";
         if (string.IsNullOrWhiteSpace(SourceFilePath))
         {
-            error = "Select a source audio file first.";
+            errorKey = LocalizationKeys.SelectSourceFirst;
             return false;
         }
 
         if (SampleEnd <= SampleStart)
         {
-            error = "Select a sample range on the waveform.";
+            errorKey = LocalizationKeys.SelectSampleRange;
             return false;
         }
 
         if (string.IsNullOrWhiteSpace(SearchFolder) || !Directory.Exists(SearchFolder))
         {
-            error = "Select a valid search folder.";
+            errorKey = LocalizationKeys.SelectValidSearchFolder;
             return false;
         }
 
